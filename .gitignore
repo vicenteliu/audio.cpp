@@ -27,3 +27,10 @@ __pycache__/
 /*.wav
 /flutter/
 /.cache/
+
+# Local personal setup (not part of upstream audio.cpp)
+/.venv/
+/LOCAL_TTS_GUIDE.md
+/server.json
+/serve_tts.sh
+/assets/resources/Ashley_*
