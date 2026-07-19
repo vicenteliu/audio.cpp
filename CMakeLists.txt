@@ -147,6 +147,7 @@ add_library(engine_runtime STATIC
     src/framework/core/backend.cpp
     src/framework/core/deferred_tensor_writer.cpp
     src/framework/core/execution_context.cpp
+    src/framework/core/host_memory.cpp
     src/framework/runtime/registry.cpp
     src/framework/runtime/model.cpp
     src/framework/runtime/session.cpp
@@ -333,6 +334,13 @@ add_library(engine_runtime STATIC
     src/models/vibevoice_asr/speech_tokenizer.cpp
     src/models/vibevoice_asr/text_decoder.cpp
     src/models/vibevoice_asr/tokenizer_text.cpp
+    src/models/voxtral_realtime/assets.cpp
+    src/models/voxtral_realtime/tokenizer_text.cpp
+    src/models/voxtral_realtime/frontend.cpp
+    src/models/voxtral_realtime/audio_encoder.cpp
+    src/models/voxtral_realtime/text_decoder.cpp
+    src/models/voxtral_realtime/session.cpp
+    src/models/voxtral_realtime/loader.cpp
     src/models/heartmula/assets.cpp
     src/models/heartmula/codec.cpp
     src/models/heartmula/generator.cpp
@@ -718,6 +726,7 @@ if (ENGINE_BUILD_WARMBENCH)
     add_engine_warmbench(supertonic_warm_bench tests/supertonic/supertonic_warm_bench.cpp)
     add_engine_warmbench(vevo2_warm_bench tests/vevo2/vevo2_warm_bench.cpp)
     add_engine_warmbench(vibevoice_asr_warm_bench tests/vibevoice_asr/vibevoice_asr_warm_bench.cpp)
+    add_engine_warmbench(voxtral_realtime_warm_bench tests/voxtral_realtime/voxtral_realtime_warm_bench.cpp)
     add_engine_warmbench(voxcpm2_warm_bench tests/voxcpm2/voxcpm2_warm_bench.cpp)
 endif()
 
@@ -904,6 +913,21 @@ if (ENGINE_BUILD_TESTS)
         NAME server_multipart_test
         COMMAND server_multipart_test
     )
+
+    add_executable(server_busy_guard_test
+        tests/unittests/test_server_busy_guard.cpp
+    )
+    target_include_directories(server_busy_guard_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/app/server)
+    find_package(Threads REQUIRED)
+    target_link_libraries(server_busy_guard_test PRIVATE Threads::Threads)
+
+    add_test(
+        NAME server_busy_guard_test
+        COMMAND server_busy_guard_test
+    )
+    # The suite deliberately drives threads against a held lock; bound it so a
+    # regression that reintroduces unbounded queuing fails instead of hanging CI.
+    set_tests_properties(server_busy_guard_test PROPERTIES TIMEOUT 60)
 
     add_executable(server_config_test
         tests/unittests/test_server_config.cpp

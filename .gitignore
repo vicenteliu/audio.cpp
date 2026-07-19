@@ -2,6 +2,7 @@
 /cmake-build*/
 ._*
 .DS_Store
+.idea/
 .vs/
 .vscode/
 compile_commands.json
