@@ -1,6 +1,7 @@
 /build*/
 /cmake-build*/
 ._*
+.DS_Store
 .vs/
 .vscode/
 compile_commands.json
@@ -34,3 +35,6 @@ __pycache__/
 /server.json
 /serve_tts.sh
 /assets/resources/Ashley_*
+/scheduler/
+/.claude/
+/.serena/
