@@ -1,0 +1,42 @@
+# acpd 部署清单示例 — 复制为 deploy.toml 后按机器修改
+# 所有字段都有默认值，最小可用清单可以是空文件。
+
+[install]
+prefix = "~/.audiocpp"
+repo = "git@github.com:vicenteliu/audio.cpp.git"
+# source_dir = "~/Workspace/audio.cpp"   # 开发机：直接用本地检出，跳过 clone
+rev = "main"
+backend = "auto"        # auto → macOS=metal, Linux=有 nvcc 则 cuda 否则 cpu
+native_cpu = true       # 二进制只在本机使用保持 true；要拷贝到其他机器改 false
+build_type = "Release"
+
+[storage]
+# 转换好的模型托管地址（M2 生效），如私有 HF repo / S3 / 任意 http(s)
+# base_url = "https://huggingface.co/vicenteliu/audiocpp-models/resolve/main"
+
+[[models]]
+id = "index-tts2"
+family = "index_tts2"
+task = "tts"
+# archive = "IndexTTS-2.tar.zst"        # M2: acpd models pack 生成
+# sha256 = "..."
+
+[[models]]
+id = "moss-tts-local"
+family = "moss_tts_local"
+task = "tts"
+
+[[models]]
+id = "higgs-stt"
+family = "higgs_audio_stt"
+task = "asr"
+
+[server]
+host = "127.0.0.1"
+port = 8088
+threads = 1
+lazy_load = true
+
+[service]
+manager = "auto"        # auto → macOS=launchd, Linux=systemd；none 则不托管
+name = "audiocpp-server"
