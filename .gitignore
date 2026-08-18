@@ -46,6 +46,7 @@ __pycache__/
 /server.json
 /serve_tts.sh
 /assets/resources/Ashley_*
+/assets/resources/Sena_*
 /scheduler/
 /.claude/
 /.serena/
