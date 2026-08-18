@@ -37,6 +37,10 @@ struct Qwen3TalkerCodes {
     Qwen3SpeechCodes decoder_input_codes;
 };
 
+void validate_qwen3_talker_voice_clone_prefill(
+    const Qwen3TalkerPrefill & prefill,
+    int64_t hidden_size);
+
 class Qwen3TalkerWeightsRuntime;
 class Qwen3TalkerStepRuntime;
 
@@ -70,7 +74,8 @@ public:
         size_t graph_arena_bytes,
         size_t talker_constant_context_bytes,
         size_t code_predictor_constant_context_bytes,
-        engine::assets::TensorStorageType weight_storage_type) const;
+        engine::assets::TensorStorageType weight_storage_type,
+        Qwen3TTSPerfMode perf_mode) const;
 
     std::shared_ptr<Qwen3TalkerStepRuntime> create_step_runtime(
         std::shared_ptr<const Qwen3TalkerWeightsRuntime> weights,

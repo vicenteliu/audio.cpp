@@ -13,11 +13,14 @@ param(
     [ValidateSet("ON", "OFF")]
     [string]$Llamafile = $null,
     [switch]$DeploymentBuild,
+    [ValidateSet("full", "core", "custom")]
+    [string]$ModelSet = "full",
+    [string]$Models = "",
     [string]$VsInstall = ""
 )
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"  # let native command stderr (e.g. cmake warnings) flow without aborting the script
 
 function Invoke-Checked {
     param(
@@ -154,7 +157,7 @@ function Find-VsCMake {
         return $cmake
     }
     $cmd = Get-Command "cmake.exe" -ErrorAction SilentlyContinue
-    return if ($cmd) { $cmd.Source } else { "" }
+    if ($cmd) { return $cmd.Source } else { return "" }
 }
 
 function Find-VsNinja {
@@ -164,7 +167,7 @@ function Find-VsNinja {
         return $ninja
     }
     $cmd = Get-Command "ninja.exe" -ErrorAction SilentlyContinue
-    return if ($cmd) { $cmd.Source } else { "" }
+    if ($cmd) { return $cmd.Source } else { return "" }
 }
 
 function Find-WindowsKitTool {
@@ -352,8 +355,35 @@ function Get-PresetSettings {
                 Llamafile = "ON"
                 EnableCuda = "OFF"
                 EnableCudaGraphs = "OFF"
+                EnableVulkan = "OFF"
                 CFlagsDebug = ""
                 CxxFlagsDebug = ""
+            }
+        }
+        "windows-vulkan-release" {
+            return @{
+                BuildType = "Release"
+                BuildTests = "OFF"
+                Native = "ON"
+                Llamafile = "ON"
+                EnableCuda = "OFF"
+                EnableCudaGraphs = "OFF"
+                EnableVulkan = "ON"
+                CFlagsDebug = ""
+                CxxFlagsDebug = ""
+            }
+        }
+        "windows-vulkan-debug" {
+            return @{
+                BuildType = "Debug"
+                BuildTests = "ON"
+                Native = "ON"
+                Llamafile = "ON"
+                EnableCuda = "OFF"
+                EnableCudaGraphs = "OFF"
+                EnableVulkan = "ON"
+                CFlagsDebug = "/O2 /Zi"
+                CxxFlagsDebug = "/O2 /Zi"
             }
         }
         "windows-cuda-debug" {
@@ -364,6 +394,7 @@ function Get-PresetSettings {
                 Llamafile = "ON"
                 EnableCuda = "ON"
                 EnableCudaGraphs = "ON"
+                EnableVulkan = "OFF"
                 CFlagsDebug = "/O2 /Zi"
                 CxxFlagsDebug = "/O2 /Zi"
             }
@@ -376,6 +407,7 @@ function Get-PresetSettings {
                 Llamafile = "ON"
                 EnableCuda = "ON"
                 EnableCudaGraphs = "ON"
+                EnableVulkan = "OFF"
                 CFlagsDebug = ""
                 CxxFlagsDebug = ""
             }
@@ -388,14 +420,32 @@ function Get-PresetSettings {
                 Llamafile = "ON"
                 EnableCuda = "ON"
                 EnableCudaGraphs = "ON"
+                EnableVulkan = "OFF"
                 CFlagsDebug = "/O2 /Zi"
                 CxxFlagsDebug = "/O2 /Zi"
             }
         }
         default {
-            throw "Unsupported Windows preset '$Name'. Use windows-cpu-release, windows-cuda-release, windows-cuda-debug, or windows-cuda-native-debug."
+            throw "Unsupported Windows preset '$Name'. Use windows-cpu-release, windows-vulkan-release, windows-vulkan-debug, windows-cuda-release, windows-cuda-debug, or windows-cuda-native-debug."
         }
     }
+}
+
+function Find-VulkanRoot {
+    foreach ($root in @($env:VULKAN_SDK, $env:VK_SDK_PATH)) {
+        if ($root -and (Test-Path (Join-Path $root "bin\glslc.exe"))) {
+            return (Resolve-Path $root).Path
+        }
+    }
+    $sdk = Find-FirstFile @(
+        "C:\VulkanSDK\*\bin\glslc.exe",
+        "C:\Program Files\VulkanSDK\*\bin\glslc.exe",
+        "C:\Program Files (x86)\VulkanSDK\*\bin\glslc.exe"
+    )
+    if ($sdk -ne "") {
+        return (Resolve-Path (Join-Path (Split-Path $sdk -Parent) "..")).Path
+    }
+    return ""
 }
 
 $settings = Get-PresetSettings $Preset
@@ -410,6 +460,7 @@ if (-not [string]::IsNullOrEmpty($Llamafile)) {
     $settings.Llamafile = $Llamafile
 }
 $isCudaPreset = $settings.EnableCuda -eq "ON"
+$isVulkanPreset = $settings.EnableVulkan -eq "ON"
 
 if ($isCudaPreset) {
     $cudaRoot = Find-CudaRoot
@@ -421,6 +472,17 @@ if ($isCudaPreset) {
     $env:CUDAToolkit_ROOT = $cudaRoot
 } else {
     $cudaRoot = ""
+}
+
+if ($isVulkanPreset) {
+    $vulkanRoot = Find-VulkanRoot
+    if ($vulkanRoot -eq "") {
+        throw "Vulkan SDK was not found. Install it from https://vulkan.lunarg.com/ and ensure VULKAN_SDK is set with glslc.exe available."
+    }
+    Add-PathFront (Join-Path $vulkanRoot "Bin")
+    $env:VULKAN_SDK = $vulkanRoot
+} else {
+    $vulkanRoot = ""
 }
 
 $vsInstall = Find-VsInstall $VsInstall
@@ -446,6 +508,11 @@ if ($isCudaPreset) {
 } else {
     Write-Host "CUDA: disabled"
 }
+if ($isVulkanPreset) {
+    Write-Host "Vulkan SDK: $vulkanRoot"
+} else {
+    Write-Host "Vulkan: disabled"
+}
 Write-Host "Visual Studio Build Tools: $vsInstall"
 Write-Host "MSVC: $cl"
 Write-Host "CMake: $cmake"
@@ -459,6 +526,10 @@ Write-Host "Native CPU optimization: $($settings.Native)"
 Write-Host "llamafile SGEMM: $($settings.Llamafile)"
 $deploymentBuildValue = if ($DeploymentBuild) { "ON" } else { "OFF" }
 Write-Host "Deployment build: $deploymentBuildValue"
+Write-Host "Model composite: $ModelSet"
+if ($Models -ne "") {
+    Write-Host "Selected models: $Models"
+}
 
 if ($Clean) {
     $buildDirForClean = Join-Path (Join-Path (Split-Path $PSScriptRoot -Parent) "build") $Preset
@@ -486,13 +557,15 @@ $configureArgs = @(
     "-DENGINE_ENABLE_CUDA=$($settings.EnableCuda)",
     "-DENGINE_ENABLE_OPENMP=ON",
     "-DENGINE_ENABLE_CUDA_GRAPHS=$($settings.EnableCudaGraphs)",
-    "-DENGINE_ENABLE_VULKAN=OFF",
+    "-DENGINE_ENABLE_VULKAN=$($settings.EnableVulkan)",
     "-DENGINE_ENABLE_METAL=OFF",
     "-DGGML_OPENMP=ON",
     "-DENGINE_ENABLE_NATIVE_CPU=$($settings.Native)",
     "-DENGINE_ENABLE_LLAMAFILE=$($settings.Llamafile)",
     "-DENGINE_BUILD_TESTS=$($settings.BuildTests)",
-    "-DAUDIOCPP_DEPLOYMENT_BUILD=$deploymentBuildValue"
+    "-DAUDIOCPP_DEPLOYMENT_BUILD=$deploymentBuildValue",
+    "-DAUDIOCPP_MODEL_SET=$ModelSet",
+    "-DAUDIOCPP_MODELS=$Models"
 )
 $configureArgs += $cpuArchSettings.CMakeArgs
 if ($settings.CFlagsDebug -ne "") {

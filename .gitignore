@@ -14,6 +14,8 @@ compile_commands.json
 *.exe
 __pycache__/
 *.pyc
+/venv/
+/.venv/
 /tests/assets/**/*.safetensors
 /unittests/
 /models/
@@ -30,8 +32,16 @@ __pycache__/
 /flutter/
 /.cache/
 
+# --- portable bundle: distributed manually, never committed ---
+/audiocpp-portable/
+
+# --- Native WebUI build artifacts ---
+/webui/native/node_modules/
+/webui/native/.svelte-kit/
+/webui/native/dist/*
+!/webui/native/dist/index.html
+
 # Local personal setup (not part of upstream audio.cpp)
-/.venv/
 /LOCAL_TTS_GUIDE.md
 /server.json
 /serve_tts.sh

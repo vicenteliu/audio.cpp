@@ -5,6 +5,8 @@
 #include "engine/framework/runtime/options.h"
 #include "engine/framework/text/chunking.h"
 #include "engine/models/pocket_tts/assets.h"
+#include "engine/models/pocket_tts/backend_weights.h"
+#include "engine/models/pocket_tts/voice_state_assets.h"
 #include "graph_common.h"
 
 #include <algorithm>
@@ -758,6 +760,7 @@ void PocketTTSSession::prepare(const runtime::SessionPreparationRequest & reques
 
 runtime::TaskResult PocketTTSSession::run(const runtime::TaskRequest & request) {
     require_prepared("PocketTTS run()");
+    audio_decoder_.clear_runtime_cache();
     runtime::TaskRequest effective_request = request;
     effective_request.voice.reset();
     GenerationRequest generation_request =

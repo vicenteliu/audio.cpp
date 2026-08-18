@@ -17,7 +17,6 @@ ARG BASE_CUDA_RUN_CONTAINER=docker.io/nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu
 FROM ${BASE_CUDA_DEV_CONTAINER} AS build
 
 ARG GCC_VERSION=14
-ARG ENGINE_ENABLE_NATIVE_CPU=ON
 
 # Install build toolchain
 RUN apt-get update && \
@@ -34,21 +33,27 @@ COPY . .
 # Configure and build
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
+        -DAUDIOCPP_MODEL_SET=full \
+        -DENGINE_ENABLE_CPU_ALL_VARIANTS=ON \
         -DENGINE_ENABLE_CUDA=ON \
         -DENGINE_ENABLE_CUDA_GRAPHS=ON \
         -DENGINE_ENABLE_VULKAN=OFF \
         -DENGINE_ENABLE_OPENMP=ON \
-        -DENGINE_ENABLE_NATIVE_CPU=$ENGINE_ENABLE_NATIVE_CPU \
         -DENGINE_BUILD_EXAMPLES=OFF \
         -DENGINE_BUILD_TESTS=OFF \
-        -DENGINE_BUILD_WARMBENCH=OFF && \
+        -DENGINE_BUILD_WARMBENCH=OFF \
+        -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined && \
     cmake --build build --parallel $(nproc) \
         --target audiocpp_cli \
         --target audiocpp_server \
         --target model_perf \
         --target miocodec_wavlm_parity
 
-# Collect all binaries + multiplexer into /app/full
+# Collect shared libraries
+RUN mkdir -p /app/lib && \
+    find build -name "*.so*" -exec cp -P {} /app/lib \;
+
+# Collect binaries + multiplexer into /app/full
 RUN mkdir -p /app/full && \
     cp build/bin/audiocpp_cli build/bin/audiocpp_server \
        build/bin/model_perf build/bin/miocodec_wavlm_parity /app/full/ && \
@@ -72,15 +77,18 @@ LABEL org.opencontainers.image.created=$BUILD_DATE \
       org.opencontainers.image.url=$IMAGE_URL \
       org.opencontainers.image.source=$IMAGE_SOURCE
 
-# Runtime deps: OpenMP threading, curl (healthcheck), ffmpeg (audio I/O)
+# Runtime deps: OpenMP threading, curl (healthcheck), ffmpeg (audio I/O),
+# python3 for the native WebUI's spec-backed model installer.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        libgomp1 curl ffmpeg && \
+        libgomp1 curl ffmpeg python3 ca-certificates && \
     apt-get autoremove -y && \
     apt-get clean -y && \
     rm -rf /tmp/* /var/tmp/* && \
     find /var/cache/apt/archives /var/lib/apt/lists -not -name lock -type f -delete && \
     find /var/cache -type f -delete
+
+COPY --from=build /app/lib/ /app
 
 WORKDIR /app
 
@@ -89,6 +97,7 @@ FROM base AS full
 
 COPY --from=build /app/full /app
 COPY model_specs/ /app/model_specs/
+COPY tools/model_manager_v2.py /app/tools/model_manager_v2.py
 
 USER ubuntu
 

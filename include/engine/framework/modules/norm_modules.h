@@ -11,6 +11,7 @@ struct NormConfig {
     float eps = 1e-5f;
     bool use_weight = true;
     bool use_bias = true;
+    bool preserve_input_layout = false;
 };
 
 struct NormWeights {
@@ -52,6 +53,97 @@ public:
 
 private:
     NormConfig config_;
+};
+
+class GemmaRMSNormModule {
+public:
+    explicit GemmaRMSNormModule(NormConfig config);
+
+    const core::ModuleSchema & schema() const noexcept;
+    const NormConfig & config() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const NormWeights & weights) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    NormConfig config_;
+};
+
+struct GroupNormConfig {
+    int64_t channels = 0;
+    int64_t groups = 0;
+    float eps = 1e-5F;
+    bool use_weight = true;
+    bool use_bias = true;
+};
+
+class GroupNormModule {
+public:
+    explicit GroupNormModule(GroupNormConfig config);
+
+    const core::ModuleSchema & schema() const noexcept;
+    const GroupNormConfig & config() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const NormWeights & weights) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    GroupNormConfig config_;
+};
+
+struct PixelNormConfig {
+    int axis = 1;
+    float eps = 1e-8f;
+};
+
+class PixelNormModule {
+public:
+    explicit PixelNormModule(PixelNormConfig config = {});
+
+    const core::ModuleSchema & schema() const noexcept;
+    const PixelNormConfig & config() const noexcept;
+
+    core::TensorValue build(core::ModuleBuildContext & ctx, const core::TensorValue & input) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    PixelNormConfig config_;
+};
+
+struct BiasNormConfig {
+    int64_t hidden_size = 0;
+};
+
+struct BiasNormWeights {
+    core::TensorValue bias;
+    float log_scale = 0.0f;
+};
+
+class BiasNormModule {
+public:
+    explicit BiasNormModule(BiasNormConfig config);
+
+    const core::ModuleSchema & schema() const noexcept;
+    const BiasNormConfig & config() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const BiasNormWeights & weights) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    BiasNormConfig config_;
 };
 
 struct AdaptiveInstanceNorm1dConfig {
