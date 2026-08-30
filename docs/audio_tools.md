@@ -2,7 +2,11 @@
 
 | Model | Family | Task(s) | Quick Start |
 |---|---|---|---|
+| AudioSR | `audiosr` | `s2s` audio super-resolution | [AudioSR](#audiosr) |
+| ControlFoley | `controlfoley` | `gen` Foley/SFX generation | [ControlFoley](#controlfoley) |
+| MeanVC2 | `meanvc2` | `vc` | [MeanVC2](#meanvc2) |
 | MioCodec | `miocodec` | `vc`, `s2s` | [MioCodec](#miocodec) |
+| PersonaPlex | `personaplex` | `s2s` | [PersonaPlex](#personaplex) |
 | RVC | `rvc` | `vc` | [RVC](#rvc) |
 | Seed-VC | `seed_vc` | `vc`, `svc` | [Seed-VC](#seed-vc) |
 | VeVo2 | `vevo2` | TTS, SVC, VC, editing | [VeVo2](#vevo2) |
@@ -11,16 +15,79 @@
 | BS-RoFormer | `bs_roformer` | `sep` | [BS-RoFormer](#bs-roformer) |
 | Mel-Band RoFormer | `mel_band_roformer` | `sep` | [Mel-Band RoFormer](#mel-band-roformer) |
 
-This page covers voice conversion, codec, audio-to-symbolic, and source-separation
-families. These models do not share one interface: conversion models consume
-source speech plus a target voice, audio-to-symbolic models consume audio and
-write structured artifacts, and separation models consume a mixture and write
-named stems.
+This page covers voice conversion, codec, audio enhancement, Foley generation,
+audio-to-symbolic, and source-separation families. These models do not share one
+interface: conversion models consume source speech plus a target voice,
+enhancement models consume source audio, Foley models consume text/audio/video
+conditioning, audio-to-symbolic models consume audio and write structured
+artifacts, and separation models consume a mixture and write named stems.
 
 Common CLI shape:
 
 ```bash
 audiocpp_cli --task <task> --family <family> --model <model-dir> --backend cuda ...
+```
+
+## AudioSR
+
+AudioSR performs audio super-resolution from an input waveform. See
+[AudioSR](models/audiosr.md) for options and long-audio chunking behavior.
+
+```bash
+audiocpp_cli --task s2s --family audiosr \
+  --model models/AudioSR-GGUF/audiosr-basic-f32.gguf \
+  --backend cuda \
+  --audio input.wav \
+  --out enhanced.wav
+```
+
+## ControlFoley
+
+ControlFoley generates Foley audio from text, video, text plus video, or
+reference audio plus video. See [ControlFoley](models/controlfoley.md) for the
+full route matrix.
+
+```bash
+audiocpp_cli --task gen --family controlfoley \
+  --model models/ControlFoley-GGUF/controlfoley-large-44k-f32.gguf \
+  --backend cuda \
+  --text "A wooden door closes in a quiet hallway." \
+  --out foley.wav
+```
+
+## MeanVC2
+
+MeanVC2 is a zero-shot voice conversion model. It takes source speech through
+`--audio` and a target speaker reference through `--voice-ref`. See
+[MeanVC2](models/meanvc2.md) for streaming behavior and options.
+
+```bash
+python3 tools/model_manager_v2.py install meanvc2_120ms_40ms_f32
+
+audiocpp_cli --task vc --family meanvc2 \
+  --model models/MeanVC2-GGUF/meanvc2-120ms-40ms-fp32.gguf \
+  --backend cuda \
+  --audio assets/resources/a.wav \
+  --voice-ref assets/resources/b.wav \
+  --out converted.wav
+```
+
+## PersonaPlex
+
+PersonaPlex is a speech-to-speech conversational model. It consumes user audio,
+a packaged or reference voice prompt, and an optional system/persona prompt.
+See [PersonaPlex](models/personaplex.md) for offline and streaming examples.
+
+```bash
+python3 tools/model_manager_v2.py install personaplex_7b_v1_q4_k
+
+audiocpp_cli --task s2s --family personaplex \
+  --model models/PersonaPlex-GGUF \
+  --backend cuda \
+  --audio user.wav \
+  --text "You are a concise assistant. Answer naturally and briefly." \
+  --request-option voice_id=NATF2 \
+  --out reply.wav
 ```
 
 ## MioCodec

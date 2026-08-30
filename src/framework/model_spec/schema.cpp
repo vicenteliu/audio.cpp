@@ -97,7 +97,7 @@ const std::unordered_set<std::string> & source_formats() {
 const std::unordered_set<std::string> & precisions() {
     static const std::unordered_set<std::string> values = {
         "native", "orig", "f32", "f16", "bf16",
-        "q8_0", "q6_k", "q5_k_m", "q5_k_s", "q4_k_m", "q4_k_s", "q4_k", "q3_k_m", "q3_k_s", "q2_k",
+        "q8_0", "q6_k", "q5_k_m", "q5_k_s", "q4_k_m", "q4_k_s", "q4_k", "q4_0", "q3_k_m", "q3_k_s", "q2_k",
     };
     return values;
 }
@@ -152,7 +152,7 @@ const std::unordered_set<std::string> & capabilities_for_task(const std::string 
                  "multi_speaker", "long_form", "built_in_voices"}},
         {"clone", {"speaker_reference", "emotion_control", "style_control", "multi_speaker", "long_form"}},
         {"vc", {"speaker_reference", "singing"}},
-        {"s2s", {"speaker_reference"}},
+        {"s2s", {"speaker_reference", "audio_enhancement"}},
         {"svc", {"speaker_reference", "singing"}},
         {"align", {"word_timestamps"}},
         {"vad", {"speech_segments", "chunk_planning"}},

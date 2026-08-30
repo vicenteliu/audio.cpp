@@ -248,7 +248,7 @@ def maybe_absolute_path(value: Any) -> Any:
     path = Path(value)
     if path.is_absolute():
         return value
-    if value.startswith(("resources/", "models/", "build/", "reference/")):
+    if value.startswith(("assets/", "resources/", "models/", "build/", "reference/")):
         return str(REPO_ROOT / path)
     return value
 
@@ -296,6 +296,8 @@ def materialize_request_paths(request: dict[str, Any]) -> dict[str, Any]:
         options = dict(out["options"])
         for key, value in options.items():
             if key.endswith("_path") or key.endswith("_file") or key.endswith(".path") or key.endswith(".file"):
+                options[key] = maybe_absolute_path(value)
+            elif key in {"video", "controlfoley.video"}:
                 options[key] = maybe_absolute_path(value)
             elif key in {"voice_samples", "vibevoice.voice_samples"}:
                 options[key] = maybe_absolute_path_list(value)

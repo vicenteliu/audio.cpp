@@ -17,12 +17,15 @@ __pycache__/
 /venv/
 /.venv/
 /tests/assets/**/*.safetensors
+/tests/omnivoice/outputs/
 /unittests/
 /models/
+/granite5asr/
 /reference/
 /resources/
 /patches/
 /target_proj/
+/tools_local/
 /nocommit/
 /perf/
 /logs/
@@ -40,6 +43,8 @@ __pycache__/
 /webui/native/.svelte-kit/
 /webui/native/dist/*
 !/webui/native/dist/index.html
+
+audio-vtest-*
 
 # Local personal setup (not part of upstream audio.cpp)
 /LOCAL_TTS_GUIDE.md

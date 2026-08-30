@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { onDestroy, onMount } from 'svelte';
   import { browserDecodeToWav, concatenateAudioBlobs } from '$lib/audio';
   import {
@@ -19,16 +20,21 @@
     setModelsRoot,
     speech,
     stopModelInstall,
-    transcription,
-    unloadModel,
-    uploadWav,
+        transcription,
+        unloadModel,
+        uploadFile,
+        uploadWav,
+        voicePreviewUrl,
     type ModelInstallJob,
     type ModelPackageSize,
     type DirectoryBrowserResponse
   } from '$lib/api';
   import { catalog, parameterCatalog, taskLabels } from '$lib/catalog';
   import { createTranslator, resolveUiLanguage, uiLanguages } from '$lib/i18n';
+  import MediaPreview from '$lib/MediaPreview.svelte';
   import { defaultChunkBudget, splitTtsChunks } from '$lib/text';
+  import { UI_THEME_STORAGE_KEY, resolvedTheme, resolveUiTheme, uiThemes, type UiTheme } from '$lib/theme';
+  import Arena from './Arena.svelte';
   import type {
     AudioOutput,
     CatalogEntry,
@@ -45,7 +51,8 @@
   } from '$lib/voices';
   import '../app.css';
 
-  let tab: 'studio' | 'models' | 'logs' = 'studio';
+  let tab: 'studio' | 'arena' | 'models' | 'logs' = 'studio';
+  let arenaComponent: { runArena: () => Promise<void> } | null = null;
   let selectedId = catalog[0]?.id || '';
   let selected: CatalogEntry = catalog[0];
   let modelPath = selected?.path || '';
@@ -54,6 +61,7 @@
   let installed: boolean | null = null;
   let loadingModel = false;
   let running = false;
+  let rewritingCaption = false;
   let status = 'Ready';
   let warningStatus = '';
   let errorStatus = '';
@@ -65,10 +73,15 @@
   let lyrics = '';
   let duration = 30;
   let seed = 1234;
-  let maxTokens = 1024;
-  let sourceFile: File | null = null;
-  let voiceFile: File | null = null;
+      let maxTokens = 1024;
+      let sourceFile: File | null = null;
+      let videoFile: File | null = null;
+      let voiceFile: File | null = null;
+  let vibeVoiceSpeakerFiles: Array<File | null> = [null, null, null, null];
+  let sourceInput: HTMLInputElement | null = null;
+  let videoInput: HTMLInputElement | null = null;
   let voiceInput: HTMLInputElement | null = null;
+  let vibeVoiceSpeakerInputs: Array<HTMLInputElement | null> = [null, null, null, null];
   let referenceTextFile: File | null = null;
   let referenceTextInput: HTMLInputElement | null = null;
   let advancedJson = '{}';
@@ -116,6 +129,10 @@
   let bundledVoices: string[] = [];
   let quickStartVoice = '';
   let uiLanguage = 'en';
+  let uiTheme: UiTheme = 'system';
+  let systemPrefersDark = true;
+  let themePreferenceQuery: MediaQueryList | null = null;
+  let themePreferenceListener: ((event: MediaQueryListEvent) => void) | null = null;
   let tr = createTranslator(uiLanguage);
   $: tr = createTranslator(uiLanguage);
 
@@ -125,11 +142,35 @@
     demo_3_woman: 'demo_3_woman',
     demo_4_woman: 'demo_4_woman'
   };
+  const exposeAllStudioPackageFamilies = new Set([
+    'audiosr',
+    'controlfoley',
+    'firered_audio',
+    'fireredtts3',
+    'meanvc2',
+    'midashenglm_gen'
+  ]);
 
   function chooseUiLanguage(code: string) {
     uiLanguage = resolveUiLanguage([code]);
     localStorage.setItem('audiocpp.ui.language', uiLanguage);
     document.documentElement.lang = uiLanguage;
+  }
+
+  function applyUiTheme(theme = uiTheme) {
+    if (!browser) return;
+    const nextTheme = resolvedTheme(theme, systemPrefersDark);
+    document.documentElement.dataset.theme = nextTheme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute(
+      'content',
+      nextTheme === 'dark' ? '#07101f' : '#f6f8fb'
+    );
+  }
+
+  function chooseUiTheme(theme: string) {
+    uiTheme = resolveUiTheme(theme);
+    localStorage.setItem(UI_THEME_STORAGE_KEY, uiTheme);
+    applyUiTheme(uiTheme);
   }
 
   async function clearLegacyUiCaches() {
@@ -190,7 +231,8 @@
   }
 
   function setDuration(value: number) {
-    duration = Math.max(1, Number.isFinite(value) ? value : 1);
+    const minimum = selected?.family === 'ace_step' ? -1 : 1;
+    duration = Math.max(minimum, Number.isFinite(value) ? value : minimum);
     if (selected?.family === 'minimax_h3') {
       advancedValues = { ...advancedValues, num_frames: miniMaxFramesForDuration(duration) };
     }
@@ -229,7 +271,10 @@
     stable_audio: 'Stable Audio 3',
     qwen3_asr: 'Qwen3-ASR',
     vevo2: 'Vevo2',
-    seed_vc: 'Seed-VC'
+    seed_vc: 'Seed-VC',
+    magpie_tts: 'MagpieTTS',
+    meanvc2: 'MeanVC2',
+    personaplex: 'PersonaPlex'
   };
 
   function pathVariantLabel(path: string) {
@@ -340,21 +385,37 @@
     })
   })).filter((group) => group.entries.length > 0);
   $: isLoaded = loadedModels.some((model) => model.id === selectedId && model.loaded &&
-    comparablePath(model.path) === comparablePath(modelPath));
-  $: needsSource = ['asr', 'vc', 'svc', 's2s', 'sep', 'vad', 'diar', 'align', 'midi'].includes(selected?.task);
+    modelMatchesSelectedPackage(model, selected));
+  $: isFireRedAudioEdit = selected?.id === 'firered-audio-semantic-edit' ||
+    selected?.id === 'firered-audio-acoustic-edit';
+  $: allowsAutoDuration = selected?.family === 'ace_step';
+  $: usesDurationSecOption =
+    selected?.family === 'controlfoley' ||
+    selected?.family === 'midashenglm_gen';
+  $: needsSource = ['asr', 'vc', 'svc', 's2s', 'sep', 'vad', 'diar', 'align', 'midi'].includes(selected?.task) ||
+    isFireRedAudioEdit;
   $: acceptsSource = needsSource || selected?.task === 'gen';
+  $: acceptsVideo = selected?.request_options?.includes('video') === true;
   $: needsVoice = (['clon', 'vc', 'svc'].includes(selected?.task) && selected?.family !== 'rvc') ||
+    (selected?.task === 's2s' && selected?.family === 'personaplex') ||
     (selected?.task === 'tts' && !['supertonic'].includes(selected?.family));
+  $: usesVibeVoiceSpeakerFiles = selected?.family === 'vibevoice';
   $: isQwenBase = selected?.task === 'tts' && selected?.family === 'qwen3_tts' &&
     !selected?.id.includes('custom');
-  $: referenceVoiceRequired = !quickStartVoice && (
+  $: allowsQuickStartVoice = ['tts', 'clon'].includes(selected?.task);
+  $: referenceVoiceRequired = !(allowsQuickStartVoice && quickStartVoice) && (
     (['clon', 'vc', 'svc'].includes(selected?.task) && selected?.family !== 'rvc') || isQwenBase);
-  $: referenceTextRequired = Boolean(voiceFile) && isQwenBase;
+  $: lyricsRequired = requiresRequestOption(selected, 'lyrics');
+  $: referenceTextRequired = requiresRequestOption(selected, 'reference_text') ||
+    (Boolean(voiceFile) && isQwenBase);
   $: quickStartVoices = server && !server.ui_management
     ? configuredVoices
     : Object.entries(demoVoiceSources)
       .filter(([, source]) => bundledVoices.includes(source))
       .map(([voice]) => voice);
+  $: quickStartVoicePreview = quickStartVoice && server?.ui_management !== false
+    ? voicePreviewUrl(demoVoiceSources[quickStartVoice] || quickStartVoice)
+    : '';
   $: showsText = ['tts', 'clon', 'gen', 's2s', 'align', 'vdes'].includes(selected?.task);
   $: supportsLiveAsr = selected?.task === 'asr' &&
     ['voxtral_realtime', 'nemotron_asr', 'higgs_audio_stt', 'sense_asr'].includes(selected?.family);
@@ -413,13 +474,39 @@
     return catalogPathMatches(choice.path, path);
   }
 
+  function mergedSessionOptions(entry: CatalogEntry) {
+    const packageChoice = selectedPackageChoice(entry);
+    return { ...(entry.session_options || {}), ...(packageChoice?.session_options || {}) };
+  }
+
+  function packageSessionOptionsMatch(entry: CatalogEntry, choice: InstallPackageChoice, model: LoadedModel) {
+    const expected = choice.session_options || {};
+    const keys = Array.from(new Set((entry.install_packages || [])
+      .flatMap((candidate) => Object.keys(candidate.session_options || {}))));
+    if (!keys.length) return true;
+    const actual = model.session_options || {};
+    return keys.every((key) => actual[key] === expected[key]);
+  }
+
+  function modelMatchesPackage(entry: CatalogEntry, model: LoadedModel, choice: InstallPackageChoice) {
+    return packagePathMatches(choice, model.path) && packageSessionOptionsMatch(entry, choice, model);
+  }
+
+  function modelMatchesSelectedPackage(model: LoadedModel, entry: CatalogEntry | undefined) {
+    if (!entry) return comparablePath(model.path) === comparablePath(modelPath);
+    const choice = selectedPackageChoice(entry);
+    if (!choice) return comparablePath(model.path) === comparablePath(modelPath);
+    return comparablePath(model.path) === comparablePath(modelPath) &&
+      packageSessionOptionsMatch(entry, choice, model);
+  }
+
   function residentModel(entry: CatalogEntry, models = loadedModels) {
     return models.find((model) => model.id === entry.id && model.loaded);
   }
 
   function packageIsResident(entry: CatalogEntry, choice: InstallPackageChoice, models = loadedModels) {
     const resident = residentModel(entry, models);
-    return Boolean(resident && packagePathMatches(choice, resident.path));
+    return Boolean(resident && modelMatchesPackage(entry, resident, choice));
   }
 
   function packageIsAvailable(
@@ -433,7 +520,8 @@
 
   function studioPackageSlots(entry: CatalogEntry) {
     const choices = entry.install_packages || [];
-    if (entry.family === 'ace_step') {
+    if (entry.family === 'ace_step' || entry.family === 'minimax_music3' ||
+        exposeAllStudioPackageFamilies.has(entry.family)) {
       return choices.map((choice) => ({ key: choice.id, label: choice.label, choice }));
     }
     const q8 = choices.find((choice) => choice.format === 'gguf' &&
@@ -490,6 +578,37 @@
       status = 'Reference voice changed. Choose or enter its matching transcript.';
       warningStatus = status;
     }
+  }
+
+  function clearVoiceReference() {
+    quickStartVoice = '';
+    savedVoiceId = '';
+    voiceFile = null;
+    voiceName = '';
+    referenceTextFile = null;
+    referenceText = '';
+    if (voiceInput) voiceInput.value = '';
+    if (referenceTextInput) referenceTextInput.value = '';
+  }
+
+  function clearSourceFile() {
+    sourceFile = null;
+    if (sourceInput) sourceInput.value = '';
+  }
+
+  function clearVideoFile() {
+    videoFile = null;
+    if (videoInput) videoInput.value = '';
+  }
+
+  function chooseVibeVoiceSpeaker(index: number, file: File | null) {
+    vibeVoiceSpeakerFiles = vibeVoiceSpeakerFiles.map((current, currentIndex) =>
+      currentIndex === index ? file : current);
+  }
+
+  function clearVibeVoiceSpeaker(index: number) {
+    chooseVibeVoiceSpeaker(index, null);
+    if (vibeVoiceSpeakerInputs[index]) vibeVoiceSpeakerInputs[index].value = '';
   }
 
   function chooseQuickStartVoice(voice: string) {
@@ -590,6 +709,10 @@
     // Specs that publish request metadata are authoritative. Older specs
     // without that metadata keep the legacy UI behavior until migrated.
     return entry.request_options === undefined || entry.request_options.includes(option);
+  }
+
+  function requiresRequestOption(entry: CatalogEntry, option: string) {
+    return entry.required_request_options?.includes(option) === true;
   }
 
   function packageVersionLabel(size: ModelPackageSize | undefined, translate = tr) {
@@ -725,7 +848,7 @@
       const resident = residentModel(entry, models);
       if (!resident) continue;
       const choice = (entry.install_packages || []).find((candidate) =>
-        packagePathMatches(candidate, resident.path));
+        modelMatchesPackage(entry, resident, candidate));
       if (choice && nextIds[entry.id] !== choice.id) {
         nextIds[entry.id] = choice.id;
         changed = true;
@@ -743,9 +866,8 @@
     const staleEntries = catalog.filter((entry) => {
       const resident = residentModel(entry);
       if (!resident) return false;
-      const residentPath = comparablePath(resident.path);
       const residentChoice = (entry.install_packages || []).find((choice) =>
-        comparablePath(resolveCatalogPath(choice.path)) === residentPath);
+        modelMatchesPackage(entry, resident, choice));
       return Boolean(residentChoice && sizes[residentChoice.id]?.installed === false);
     });
     if (!staleEntries.length) return false;
@@ -777,8 +899,9 @@
   function clearModelSelection() {
     selectedId = '';
     quickStartVoice = '';
-    configuredVoices = [];
-    modelPath = '';
+        configuredVoices = [];
+        videoFile = null;
+        modelPath = '';
     installed = null;
     paramSpecs = [];
     advancedValues = {};
@@ -854,7 +977,10 @@
 
   function resetParams() {
     const byId = parameterCatalog[selected?.id] || parameterCatalog[selected?.family] || [];
-    paramSpecs = byId;
+    const hidesDurationSec = selected?.family === 'controlfoley' || selected?.family === 'midashenglm_gen';
+    paramSpecs = byId.filter((spec) =>
+      !(selected?.family === 'vibevoice' && spec.name === 'voice_samples') &&
+      !(hidesDurationSec && spec.name === 'duration_sec'));
     advancedValues = Object.fromEntries(byId.map((spec) => [spec.name, spec.default ?? '']));
     if (selected?.family === 'minimax_h3') {
       duration = 15;
@@ -1000,7 +1126,7 @@
         task: selected.task,
         mode: modeOverride || selected.mode || 'offline',
         load_options: selected.load_options || {},
-        session_options: selected.session_options || {}
+        session_options: mergedSessionOptions(selected)
       });
       await refresh();
       status = tr('status.modelReady', { model: selected.display_name });
@@ -1073,6 +1199,18 @@
     return uploadWav(wav, aborter?.signal);
   }
 
+  async function vibeVoiceSamplePaths(): Promise<string | undefined> {
+    const firstEmpty = vibeVoiceSpeakerFiles.findIndex((file) => !file);
+    const hasLaterFile = firstEmpty >= 0 && vibeVoiceSpeakerFiles.slice(firstEmpty + 1).some(Boolean);
+    if (hasLaterFile) {
+      throw new StatusWarning('VibeVoice speaker references must be filled from Speaker 1 without gaps.');
+    }
+    const files = vibeVoiceSpeakerFiles.filter((file): file is File => Boolean(file));
+    if (!files.length) return undefined;
+    const paths = await Promise.all(files.map((file) => stagedPath(file)));
+    return paths.filter((path): path is string => Boolean(path)).join(',');
+  }
+
   function requestOptions() {
     let raw: Record<string, unknown> = {};
     try {
@@ -1083,6 +1221,74 @@
     }
     const defaults = selected.default_options || {};
     return { ...defaults, ...advancedValues, ...raw };
+  }
+
+  function base64Text(value: string): string {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return new TextDecoder().decode(bytes);
+  }
+
+  function acePlanFromResult(result: Record<string, unknown>): Record<string, unknown> {
+    if (Array.isArray(result.artifacts)) {
+      const artifact = result.artifacts.find((entry): entry is { id: string; payload: string } =>
+        typeof entry === 'object' && entry !== null &&
+          (entry as { id?: unknown }).id === 'ace_step_caption_plan' &&
+          typeof (entry as { payload?: unknown }).payload === 'string');
+      if (artifact) return JSON.parse(base64Text(artifact.payload));
+    }
+    if (typeof result.text === 'string') return { caption: result.text };
+    return {};
+  }
+
+  async function rewriteAceCaption() {
+    if (selected?.family !== 'ace_step' || running || rewritingCaption) return;
+    if (!text.trim() && !lyrics.trim()) {
+      status = 'Enter a caption or lyrics to rewrite.';
+      warningStatus = status;
+      errorStatus = '';
+      return;
+    }
+    rewritingCaption = true;
+    warningStatus = '';
+    errorStatus = '';
+    status = tr('request.rewritingCaption');
+    try {
+      await ensureLoaded();
+      const options = { ...requestOptions(), rewrite_caption: true };
+      const request: Record<string, unknown> = {
+        text,
+        seed: resolveRequestSeed(seed),
+        duration_seconds: duration,
+        options
+      };
+      if (language.trim()) request.language = language;
+      if (lyrics.trim()) request.lyrics = lyrics;
+      const result = await runTask({ model: selected.id, request });
+      const plan = acePlanFromResult(result);
+      if (typeof plan.caption === 'string' && plan.caption.trim()) text = plan.caption;
+      if (typeof plan.language === 'string' && plan.language.trim()) language = plan.language;
+      if (typeof plan.duration_seconds === 'number' && Number.isFinite(plan.duration_seconds) && plan.duration_seconds > 0) {
+        duration = plan.duration_seconds;
+      }
+      const nextAdvanced = { ...advancedValues };
+      if (typeof plan.bpm === 'number' && Number.isFinite(plan.bpm)) nextAdvanced.bpm = plan.bpm;
+      if (typeof plan.keyscale === 'string') nextAdvanced.keyscale = plan.keyscale;
+      if (typeof plan.timesignature === 'string') nextAdvanced.timesignature = plan.timesignature;
+      advancedValues = nextAdvanced;
+      outputText = typeof result.text === 'string' ? result.text : '';
+      outputJson = JSON.stringify(plan, null, 2);
+      status = 'Caption rewritten.';
+    } catch (error) {
+      status = error instanceof Error ? error.message : String(error);
+      errorStatus = status;
+      log(`Caption rewrite failed: ${status}`);
+    } finally {
+      rewritingCaption = false;
+    }
   }
 
   function clearOutput() {
@@ -1103,7 +1309,8 @@
     if (!isLoaded) {
       await doLoad();
       await refresh();
-      if (!loadedModels.some((model) => model.id === selectedId && model.loaded)) {
+      if (!loadedModels.some((model) => model.id === selectedId && model.loaded &&
+        modelMatchesSelectedPackage(model, selected))) {
         throw new Error('Model did not load.');
       }
     }
@@ -1122,7 +1329,8 @@
       await refresh();
     }
     if (!loadedModels.some((model) =>
-      model.id === selectedId && model.loaded && model.mode === mode)) {
+      model.id === selectedId && model.loaded && model.mode === mode &&
+        modelMatchesSelectedPackage(model, selected))) {
       throw new Error(`Model did not load in ${mode} mode.`);
     }
   }
@@ -1355,17 +1563,30 @@
         throw new StatusWarning(`${selected.display_name_en || selected.display_name} requires a reference voice.`);
       }
       if (referenceTextRequired && !referenceText.trim()) {
-        throw new StatusWarning('Qwen3-TTS Base voice cloning requires a reference transcript. Choose a matching .txt file or enter the transcript.');
+        const prefix = isQwenBase ? 'Qwen3-TTS Base voice cloning' : (selected.display_name_en || selected.display_name);
+        throw new StatusWarning(`${prefix} requires a reference transcript. Choose a matching .txt file or enter the transcript.`);
+      }
+      if (lyricsRequired && !lyrics.trim()) {
+        throw new StatusWarning(`${selected.display_name_en || selected.display_name} requires lyrics.`);
       }
       await ensureLoaded();
-      const options = requestOptions();
-      const audio = acceptsSource ? await stagedPath(sourceFile) : undefined;
-      const voiceRef = needsVoice ? await stagedPath(voiceFile) : undefined;
+        const options = requestOptions();
+        if (usesVibeVoiceSpeakerFiles) {
+          const samples = await vibeVoiceSamplePaths();
+          if (samples) options.voice_samples = samples;
+        }
+        if (acceptsVideo && videoFile) {
+          options.video = await uploadFile(videoFile, aborter?.signal);
+        }
+        const audio = acceptsSource ? await stagedPath(sourceFile) : undefined;
+      const voiceRef = needsVoice && !usesVibeVoiceSpeakerFiles ? await stagedPath(voiceFile) : undefined;
 
       if (['tts', 'clon', 'vdes'].includes(selected.task)) {
         if (!text.trim()) throw new StatusWarning('Enter text to generate.');
+        const effectiveChunkBudget = Math.max(40, chunkBudget);
+        if (selected.family === 'voxcpm2') options.text_chunk_size = effectiveChunkBudget;
         const chunks = longText && selected.task !== 'vdes'
-          ? splitTtsChunks(text, Math.max(40, chunkBudget))
+          ? splitTtsChunks(text, effectiveChunkBudget)
           : [text];
         const audioChunks: Blob[] = [];
         const timings: Array<Record<string, unknown>> = [];
@@ -1424,12 +1645,15 @@
         if (['gen', 's2s', 'align'].includes(selected.task) && language.trim()) request.language = language;
         if (selected.task === 'gen') {
           if (lyrics.trim()) request.lyrics = lyrics;
-          request.duration_seconds = duration;
+          if (!isFireRedAudioEdit) {
+            if (usesDurationSecOption) options.duration_sec = duration;
+            else request.duration_seconds = duration;
+          }
           request.seed = resolvedSeed;
-          request.max_tokens = maxTokens;
+          if (supportsMaxTokens(selected)) request.max_tokens = maxTokens;
         } else if (selected.task === 's2s') {
           request.seed = resolvedSeed;
-          request.max_tokens = maxTokens;
+          if (supportsMaxTokens(selected)) request.max_tokens = maxTokens;
         }
         if (audio) request.audio = audio;
         if (voiceRef) request.voice_ref = voiceRef;
@@ -1494,7 +1718,8 @@
     }
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !running) {
       event.preventDefault();
-      run();
+      if (tab === 'arena') arenaComponent?.runArena();
+      else run();
     }
   }
 
@@ -1729,6 +1954,15 @@
 
   onMount(async () => {
     await clearLegacyUiCaches();
+    themePreferenceQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    systemPrefersDark = themePreferenceQuery.matches;
+    themePreferenceListener = (event) => {
+      systemPrefersDark = event.matches;
+      if (uiTheme === 'system') applyUiTheme();
+    };
+    themePreferenceQuery.addEventListener('change', themePreferenceListener);
+    uiTheme = resolveUiTheme(localStorage.getItem(UI_THEME_STORAGE_KEY));
+    applyUiTheme(uiTheme);
     const savedLanguage = localStorage.getItem('audiocpp.ui.language');
     uiLanguage = resolveUiLanguage(savedLanguage ? [savedLanguage] : navigator.languages);
     document.documentElement.lang = uiLanguage;
@@ -1789,6 +2023,9 @@
     for (const output of outputAudio) URL.revokeObjectURL(output.url);
     if (installPoll !== null) window.clearInterval(installPoll);
     if (packageSizePoll !== null) window.clearInterval(packageSizePoll);
+    if (themePreferenceQuery && themePreferenceListener) {
+      themePreferenceQuery.removeEventListener('change', themePreferenceListener);
+    }
   });
 </script>
 
@@ -1805,6 +2042,7 @@
   </div>
   <nav aria-label={tr('nav.primary')}>
     <button class:active={tab === 'studio'} on:click={openStudioPage}>{tr('nav.studio')}</button>
+    <button class:active={tab === 'arena'} on:click={() => tab = 'arena'}>{tr('nav.arena')}</button>
     {#if server?.ui_management !== false}
       <button class:active={tab === 'models'} on:click={openModelsPage}>{tr('nav.models')}</button>
     {/if}
@@ -1816,6 +2054,15 @@
       on:change={(event) => chooseUiLanguage(event.currentTarget.value)}>
       {#each uiLanguages as language}
         <option value={language.code}>{language.name}</option>
+      {/each}
+    </select>
+  </label>
+  <label class="theme-picker">
+    <span>{tr('theme.label')}</span>
+    <select value={uiTheme} aria-label={tr('theme.label')}
+      on:change={(event) => chooseUiTheme(event.currentTarget.value)}>
+      {#each uiThemes as theme}
+        <option value={theme.id}>{tr(`theme.${theme.id}`, {}, theme.label)}</option>
       {/each}
     </select>
   </label>
@@ -1935,8 +2182,17 @@
         {/if}
 
         {#if selected.task === 'gen'}
-          <label for="lyrics">{tr('request.lyrics')} <span>{tr('request.optional')}</span></label>
-          <textarea id="lyrics" rows="3" bind:value={lyrics} placeholder="[Verse]…"></textarea>
+          <label for="lyrics">{tr('request.lyrics')} <span>{lyricsRequired ? tr('voice.required') : tr('request.optional')}</span></label>
+          <textarea id="lyrics" rows="3" bind:value={lyrics} required={lyricsRequired}
+            aria-required={lyricsRequired} placeholder="[Verse]…"></textarea>
+          {#if selected.family === 'ace_step'}
+            <div class="media-actions">
+              <button type="button" disabled={running || rewritingCaption || (!text.trim() && !lyrics.trim())}
+                on:click={rewriteAceCaption}>
+                {rewritingCaption ? tr('request.rewritingCaption') : tr('request.rewriteCaption')}
+              </button>
+            </div>
+          {/if}
         {/if}
 
         {#if selected.task === 'asr'}
@@ -1972,8 +2228,11 @@
           {#if selected.task === 'gen'}
             <div>
               <label for="duration">{tr('request.duration')}</label>
-              <input id="duration" type="number" min="1" step="0.1" value={duration}
+              <input id="duration" type="number" min={allowsAutoDuration ? -1 : 1} step="0.1" value={duration}
                 on:input={(event) => setDuration(event.currentTarget.valueAsNumber)} />
+              {#if allowsAutoDuration}
+                <small>{tr('request.autoDuration')}</small>
+              {/if}
               {#if selected.family === 'minimax_h3'}
                 <small>{tr('request.minimaxFrames', { frames: Number(advancedValues.num_frames || 0) })}</small>
               {/if}
@@ -1981,10 +2240,11 @@
           {/if}
         </div>
 
-        {#if acceptsSource}
-          <label for="source">{tr('request.sourceAudio')} {needsSource ? '' : `(${tr('request.optional')})`}</label>
-          <input id="source" class="file file-native" type="file" accept="audio/*"
-            on:change={(event) => sourceFile = event.currentTarget.files?.[0] || null} />
+            {#if acceptsSource}
+              <label for="source">{tr('request.sourceAudio')} {needsSource ? '' : `(${tr('request.optional')})`}</label>
+              <input id="source" class="file file-native" type="file" accept="audio/*"
+                bind:this={sourceInput}
+                on:change={(event) => sourceFile = event.currentTarget.files?.[0] || null} />
           <label class="file-picker" for="source"><strong>{tr('file.choose')}</strong><span>{sourceFile?.name || tr('file.none')}</span></label>
           <div class="media-actions">
             {#if recordingTarget === 'source'}
@@ -1993,9 +2253,11 @@
             {:else}
               <button type="button" disabled={Boolean(recorder) || liveRecording}
                 on:click={() => startRecording('source')}>{tr('request.recordMicrophone')}</button>
+              <button type="button" disabled={!sourceFile} on:click={clearSourceFile}>{tr('file.clear')}</button>
               {#if sourceFile}<span>{sourceFile.name}</span>{/if}
             {/if}
           </div>
+          <MediaPreview file={sourceFile} kind="audio" label={tr('file.preview')} />
           {#if supportsLiveAsr}
             <div class="live-card">
               <div>
@@ -2008,12 +2270,25 @@
                 <button type="button" disabled={running || Boolean(recorder)}
                   on:click={startLiveTranscription}>{tr('request.startLive')}</button>
               {/if}
-            </div>
-          {/if}
-        {/if}
+                </div>
+              {/if}
+            {/if}
 
-        {#if needsVoice}
-          {#if quickStartVoices.length}
+            {#if acceptsVideo}
+              <label for="video">Video <span>{tr('request.optional')}</span></label>
+              <input id="video" class="file file-native" type="file" accept="video/*"
+                bind:this={videoInput}
+                on:change={(event) => videoFile = event.currentTarget.files?.[0] || null} />
+              <label class="file-picker" for="video"><strong>{tr('file.choose')}</strong><span>{videoFile?.name || tr('file.none')}</span></label>
+              <div class="media-actions">
+                <button type="button" disabled={!videoFile} on:click={clearVideoFile}>{tr('file.clear')}</button>
+                {#if videoFile}<span>{videoFile.name}</span>{/if}
+              </div>
+              <MediaPreview file={videoFile} kind="video" label={tr('file.preview')} />
+            {/if}
+
+            {#if needsVoice && !usesVibeVoiceSpeakerFiles}
+          {#if allowsQuickStartVoice && quickStartVoices.length}
             <label for="quick-start-voice">{server?.ui_management === false ? tr('voice.configured') : tr('voice.quickStart')}</label>
             <select id="quick-start-voice" value={quickStartVoice}
               on:change={(event) => chooseQuickStartVoice(event.currentTarget.value)}>
@@ -2024,6 +2299,7 @@
               <div class="quick-voice-note">
                 {tr('voice.bundledNote')}
               </div>
+              <MediaPreview src={quickStartVoicePreview} name={quickStartVoice} kind="audio" label={tr('file.preview')} />
             {/if}
           {/if}
           <div class="reference-input-grid">
@@ -2049,9 +2325,13 @@
             {:else}
               <button type="button" disabled={Boolean(recorder) || liveRecording}
                 on:click={() => startRecording('voice')}>{tr('request.recordMicrophone')}</button>
+              <button type="button"
+                disabled={!quickStartVoice && !savedVoiceId && !voiceFile && !referenceTextFile && !referenceText.trim()}
+                on:click={clearVoiceReference}>Clear reference</button>
               {#if voiceFile}<span>{voiceFile.name}</span>{/if}
             {/if}
           </div>
+          <MediaPreview file={voiceFile} kind="audio" label={tr('file.preview')} />
           <label for="reference">{tr('voice.transcript')}
             <span>{referenceTextRequired ? tr('voice.requiredClone') : tr('voice.recommendedClone')}</span>
           </label>
@@ -2079,6 +2359,31 @@
               <button type="button" disabled={!voiceFile} on:click={storeCurrentVoice}>{tr('voice.save')}</button>
               <button class="danger" type="button" disabled={!savedVoiceId}
                 on:click={removeCurrentVoice}>{tr('common.delete')}</button>
+            </div>
+          </div>
+        {/if}
+
+        {#if usesVibeVoiceSpeakerFiles}
+          <div class="vibevoice-speakers">
+            <div class="field-label">Speaker references <span>optional, up to 4</span></div>
+            <div class="reference-input-grid">
+              {#each [0, 1, 2, 3] as speaker}
+                <div>
+                  <label for={'vibevoice-speaker-' + speaker}>Speaker {speaker + 1}</label>
+                  <input id={'vibevoice-speaker-' + speaker} class="file file-native" type="file" accept="audio/*"
+                    bind:this={vibeVoiceSpeakerInputs[speaker]}
+                    on:change={(event) => chooseVibeVoiceSpeaker(speaker, event.currentTarget.files?.[0] || null)} />
+                  <label class="file-picker" for={'vibevoice-speaker-' + speaker}>
+                    <strong>{tr('file.choose')}</strong>
+                    <span>{vibeVoiceSpeakerFiles[speaker]?.name || tr('file.none')}</span>
+                  </label>
+                  <div class="media-actions">
+                    <button type="button" disabled={!vibeVoiceSpeakerFiles[speaker]}
+                      on:click={() => clearVibeVoiceSpeaker(speaker)}>{tr('file.clear')}</button>
+                  </div>
+                  <MediaPreview file={vibeVoiceSpeakerFiles[speaker]} kind="audio" label={tr('file.preview')} />
+                </div>
+              {/each}
             </div>
           </div>
         {/if}
@@ -2181,6 +2486,25 @@
         {#if outputJson}<pre>{outputJson}</pre>{/if}
       </section>
     </div>
+  {:else if tab === 'arena'}
+    <Arena
+      bind:this={arenaComponent}
+      {activeCatalog}
+      {loadedModels}
+      {server}
+      {modelsFolder}
+      {maxTokens}
+      {entrySelectable}
+      {studioPackageSlots}
+      {packageIsAvailable}
+      {packageSessionOptionsMatch}
+      {supportsMaxTokens}
+      {supportsRequestOption}
+      {requiresRequestOption}
+      {refresh}
+      {log}
+      {tr}
+    />
   {:else if tab === 'models'}
     <section class="page-head">
       <p class="eyebrow">{tr('models.eyebrow')}</p><h1>{tr('models.title')}</h1>

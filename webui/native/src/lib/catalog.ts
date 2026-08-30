@@ -18,7 +18,7 @@ interface PackageSpec {
   family: string;
   packages?: Array<Omit<PackageEntry, 'family'>>;
   options?: {
-    request?: Array<{ name: string }>;
+    request?: Array<{ name: string; required?: boolean }>;
   };
   ui?: {
     builtin_voices?: string[];
@@ -39,6 +39,14 @@ const packages: PackageEntry[] = Object.values(specModules).flatMap((spec) =>
 );
 
 const specsByFamily = new Map(Object.values(specModules).map((spec) => [spec.family, spec]));
+const exposeAllGgufPackageFamilies = new Set([
+  'audiosr',
+  'controlfoley',
+  'firered_audio',
+  'fireredtts3',
+  'meanvc2',
+  'midashenglm_gen'
+]);
 
 const hanCharacters = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
 
@@ -71,7 +79,7 @@ function preferredPackage(entries: PackageEntry[]): PackageEntry | undefined {
 function relatedPackages(entry: CatalogEntry): PackageEntry[] {
   const family = packages.filter((candidate) => candidate.family === entry.family);
   if (!family.length) return [];
-  if (entry.family === 'ace_step') return family;
+  if (entry.family === 'ace_step' || entry.family === 'minimax_music3') return family;
   if (!entry.download_id) return family;
   const exact = family.find((candidate) => candidate.id === entry.download_id);
   if (exact) {
@@ -104,6 +112,27 @@ function relatedPackages(entry: CatalogEntry): PackageEntry[] {
   return family;
 }
 
+function relatedExposeAllGgufPackages(entry: CatalogEntry): PackageEntry[] {
+  const family = packages.filter((candidate) =>
+    candidate.family === entry.family && candidate.format === 'gguf');
+  if (!family.length) return [];
+  if (!entry.download_id) return family;
+  const exact = family.find((candidate) => candidate.id === entry.download_id);
+  if (!exact) return relatedPackages(entry);
+  const matches = family.filter((candidate) => candidate.target_directory === exact.target_directory);
+  return matches.length ? matches : [exact];
+}
+
+function exposedPackageRank(entry: PackageEntry, selectedId?: string): number {
+  if (selectedId && entry.id === selectedId) return 0;
+  if (entry.default) return 1;
+  if (['q4_k', 'q4_0', 'q8_0', 'q8'].includes(entry.precision)) return 2;
+  if (['f16', 'fp16', 'bf16'].includes(entry.precision)) return 3;
+  if (entry.precision === 'f32') return 4;
+  if (entry.precision === 'orig') return 5;
+  return 6;
+}
+
 function packageLabel(entry: PackageEntry): string {
   if (entry.family === 'ace_step') {
     const precision = entry.precision === 'bf16'
@@ -130,6 +159,8 @@ function packageModelPath(entry: PackageEntry): string {
   if (entry.format === 'gguf' && entry.family === 'minimax_h3') {
     const entryName = entry.id.includes('int8_dit') ? 'dit_int8.gguf' : 'dit.gguf';
     modelFile = entry.files?.find((file) => file.toLowerCase().endsWith(`/${entryName}`));
+  } else if (entry.format === 'gguf' && entry.family === 'minimax_music3') {
+    return `models/${entry.target_directory}`;
   } else if (entry.format === 'gguf') {
     modelFile = entry.files?.find((file) => file.toLowerCase().endsWith('.gguf'));
   }
@@ -142,17 +173,49 @@ function packageModelPath(entry: PackageEntry): string {
   return `models/${entry.target_directory}/${relative}`.replace(/\/+/g, '/');
 }
 
+function packageSessionOptions(entry: PackageEntry): Record<string, string> | undefined {
+  if (entry.family !== 'minimax_music3') return undefined;
+  if (entry.id === 'minimax_music3_q8_0') {
+    return {
+      'minimax_music3.language_model_gguf': 'language_model_q8_0.gguf',
+      'minimax_music3.rvq_depth_decoder_gguf': 'rvq_depth_decoder_q8_0.gguf',
+      'minimax_music3.flow_transformer_gguf': 'transformer_q8_0.gguf'
+    };
+  }
+  if (entry.id === 'minimax_music3_bf16') {
+    return {
+      'minimax_music3.language_model_gguf': 'language_model_bf16.gguf',
+      'minimax_music3.rvq_depth_decoder_gguf': 'rvq_depth_decoder_bf16.gguf',
+      'minimax_music3.flow_transformer_gguf': 'transformer_bf16.gguf'
+    };
+  }
+  if (entry.id === 'minimax_music3_q4_0') {
+    return {
+      'minimax_music3.language_model_gguf': 'language_model_q4_0.gguf',
+      'minimax_music3.rvq_depth_decoder_gguf': 'rvq_depth_decoder_q8_0.gguf',
+      'minimax_music3.flow_transformer_gguf': 'transformer_q4_0.gguf'
+    };
+  }
+  return undefined;
+}
+
 function installChoices(entry: CatalogEntry): InstallPackageChoice[] {
-  const related = relatedPackages(entry);
-  if (entry.family === 'ace_step') {
+  const exposesAllGguf = exposeAllGgufPackageFamilies.has(entry.family);
+  const related = exposesAllGguf ? relatedExposeAllGgufPackages(entry) : relatedPackages(entry);
+  if (entry.family === 'ace_step' || entry.family === 'minimax_music3' ||
+      exposesAllGguf) {
     return related
       .filter((candidate) => candidate.format === 'gguf')
+      .sort((left, right) => exposesAllGguf
+        ? exposedPackageRank(left, entry.download_id) - exposedPackageRank(right, entry.download_id)
+        : Number(right.default === true) - Number(left.default === true))
       .map((candidate) => ({
         id: candidate.id,
         label: packageLabel(candidate),
         path: packageModelPath(candidate),
         format: candidate.format,
-        precision: candidate.precision
+        precision: candidate.precision,
+        session_options: packageSessionOptions(candidate)
       }));
   }
   const q8 = preferredPackage(related.filter((candidate) =>
@@ -174,7 +237,8 @@ function installChoices(entry: CatalogEntry): InstallPackageChoice[] {
       label: packageLabel(candidate),
       path: packageModelPath(candidate),
       format: candidate.format,
-      precision: candidate.precision
+      precision: candidate.precision,
+      session_options: packageSessionOptions(candidate)
     }));
 }
 
@@ -196,6 +260,9 @@ export const catalog = (rawCatalog.models as CatalogEntry[]).flatMap((entry) => 
     install_packages: choices,
     path: installPackage?.path || entry.path,
     request_options: spec?.options?.request?.map((option) => option.name),
+    required_request_options: spec?.options?.request
+      ?.filter((option) => option.required === true)
+      .map((option) => option.name),
     builtin_voices: spec?.ui?.builtin_voices,
     default_voice: spec?.ui?.default_voice
   }];
