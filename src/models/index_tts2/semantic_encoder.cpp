@@ -552,13 +552,17 @@ std::shared_ptr<const IndexTTS2Wav2Vec2BertWeights> load_index_tts2_wav2vec2bert
             matmul_storage_type,
             conv_storage_type));
     }
+    // Normalization statistics, not matmul weights: they are broadcast with
+    // ggml_repeat and consumed by ggml_sub/ggml_div against F32 activations, and
+    // the Metal elementwise kernels require both operands to be F32. Keep them
+    // F32 regardless of index_tts2.weight_type.
     weights->semantic_mean = weights->store->make_from_f32(
         engine::core::TensorShape::from_dims({kHidden}),
-        matmul_storage_type,
+        engine::assets::TensorStorageType::F32,
         assets.wav2vec2bert_stats->require_f32("mean", {kHidden}));
     weights->semantic_std = weights->store->make_from_f32(
         engine::core::TensorShape::from_dims({kHidden}),
-        matmul_storage_type,
+        engine::assets::TensorStorageType::F32,
         wav2vec2bert_std(*assets.wav2vec2bert_stats));
 
     weights->store->upload();
